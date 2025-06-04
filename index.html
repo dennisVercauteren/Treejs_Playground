@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Tube Intersection Example</title>
+  <style>
+    body { margin: 0; overflow: hidden; }
+    canvas { width: 100%; height: 100%; display: block; }
+  </style>
+</head>
+<body>
+<script src="https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.164.1/examples/js/controls/OrbitControls.js"></script>
+<script>
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x202020);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1, 5000);
+camera.position.set(200, 200, 200);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+const light = new THREE.DirectionalLight(0xffffff, 1);
+light.position.set(100, 200, 100);
+scene.add(light);
+scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+
+const radius = 25; // 50 mm diameter
+const length = 500;
+const wall = 0.8; // not modeled but kept for reference
+const fillet = 5;
+
+function tubeMaterial(axis2) {
+  const mat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.3, roughness: 0.7, side: THREE.DoubleSide });
+  mat.onBeforeCompile = shader => {
+    shader.uniforms.radius = { value: radius };
+    shader.uniforms.fillet = { value: fillet };
+    shader.uniforms.axis2 = { value: axis2.clone() };
+    shader.vertexShader = 'varying vec3 vWorldPosition;\n' + shader.vertexShader;
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <worldpos_vertex>',
+      '#include <worldpos_vertex>\n  vWorldPosition = worldPosition.xyz;'
+    );
+    shader.fragmentShader =
+      'uniform float radius;\n' +
+      'uniform float fillet;\n' +
+      'uniform vec3 axis2;\n' +
+      'varying vec3 vWorldPosition;\n' +
+      shader.fragmentShader;
+    const weld = `
+      vec3 axis1 = vec3(0.0, 0.0, 1.0);
+      vec3 p = vWorldPosition;
+      vec3 q1 = p - axis1 * dot(p, axis1);
+      float d1 = abs(length(q1) - radius);
+      vec3 q2 = p - axis2 * dot(p, axis2);
+      float d2 = abs(length(q2) - radius);
+      float weld = 1.0 - smoothstep(fillet, fillet * 1.2, max(d1, d2));
+      diffuseColor.rgb += weld * 0.3;
+    `;
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <dithering_fragment>',
+      weld + '\n#include <dithering_fragment>'
+    );
+  };
+  return mat;
+}
+
+function createTube(axis2) {
+  const geometry = new THREE.CylinderGeometry(radius, radius, length, 64, 1, true);
+  const mesh = new THREE.Mesh(geometry, tubeMaterial(axis2));
+  return mesh;
+}
+
+// Tube 1 along Z axis
+const axis1 = new THREE.Vector3(0, 0, 1);
+const tube1 = createTube(axis1);
+tube1.rotation.x = Math.PI / 2;
+scene.add(tube1);
+
+// Tube 2 rotated 60 degrees around Y axis
+const angle = THREE.MathUtils.degToRad(60);
+const axis2 = new THREE.Vector3(Math.sin(angle), 0, Math.cos(angle)).normalize();
+const tube2 = createTube(axis2);
+tube2.rotation.x = Math.PI / 2;
+tube2.rotation.y = angle;
+scene.add(tube2);
+
+window.addEventListener('resize', onWindowResize);
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+animate();
+</script>
+</body>
+</html>
