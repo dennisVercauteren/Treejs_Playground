@@ -1,110 +1,159 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Tube Intersection Example</title>
+  <meta charset="UTF-8">
+  <title>Slot Wheel Simulator</title>
   <style>
-    body { margin: 0; overflow: hidden; }
-    canvas { width: 100%; height: 100%; display: block; }
+    body {
+      margin: 0;
+      background: #202020;
+      color: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      font-family: sans-serif;
+    }
+    #container {
+      position: relative;
+    }
+    canvas {
+      background: #444;
+      border-radius: 50%;
+      display: block;
+    }
+    button {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: -50px;
+      padding: 6px 12px;
+      font-size: 16px;
+    }
   </style>
 </head>
 <body>
-<script type="module">
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js';
-import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/controls/OrbitControls.js';
+<div id="container">
+  <canvas id="wheelCanvas"></canvas>
+  <button id="toggleBtn">Start</button>
+</div>
+<script src="./dat.gui.min.js"></script>
+<script>
+(function () {
+  const canvas = document.getElementById('wheelCanvas');
+  const ctx = canvas.getContext('2d');
+  const btn = document.getElementById('toggleBtn');
 
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x202020);
-
-const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 1, 5000);
-camera.position.set(200, 200, 200);
-
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-document.body.appendChild(renderer.domElement);
-
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-
-const light = new THREE.DirectionalLight(0xffffff, 1);
-light.position.set(100, 200, 100);
-scene.add(light);
-scene.add(new THREE.AmbientLight(0xffffff, 0.3));
-
-const radius = 25; // 50 mm diameter
-const length = 500;
-const wall = 0.8; // not modeled but kept for reference
-const fillet = 5;
-
-function tubeMaterial(axis2) {
-  const mat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.3, roughness: 0.7, side: THREE.DoubleSide });
-  mat.onBeforeCompile = shader => {
-    shader.uniforms.radius = { value: radius };
-    shader.uniforms.fillet = { value: fillet };
-    shader.uniforms.axis2 = { value: axis2.clone() };
-    shader.vertexShader = 'varying vec3 vWorldPosition;\n' + shader.vertexShader;
-    shader.vertexShader = shader.vertexShader.replace(
-      '#include <worldpos_vertex>',
-      '#include <worldpos_vertex>\n  vWorldPosition = worldPosition.xyz;'
-    );
-    shader.fragmentShader =
-      'uniform float radius;\n' +
-      'uniform float fillet;\n' +
-      'uniform vec3 axis2;\n' +
-      'varying vec3 vWorldPosition;\n' +
-      shader.fragmentShader;
-    const weld = `
-      vec3 axis1 = vec3(0.0, 0.0, 1.0);
-      vec3 p = vWorldPosition;
-      vec3 q1 = p - axis1 * dot(p, axis1);
-      float d1 = abs(length(q1) - radius);
-      vec3 q2 = p - axis2 * dot(p, axis2);
-      float d2 = abs(length(q2) - radius);
-      float weld = 1.0 - smoothstep(fillet, fillet * 1.2, max(d1, d2));
-      diffuseColor.rgb += weld * 0.3;
-    `;
-    shader.fragmentShader = shader.fragmentShader.replace(
-      '#include <dithering_fragment>',
-      weld + '\n#include <dithering_fragment>'
-    );
+  const config = {
+    numWhite: 35,
+    numBlack: 35,
+    whiteWidth: 1,
+    blackWidth: 1,
+    diameter: 300,
+    stepsPerRev: 200
   };
-  return mat;
-}
 
-function createTube(axis2) {
-  const geometry = new THREE.CylinderGeometry(radius, radius, length, 64, 1, true);
-  const mesh = new THREE.Mesh(geometry, tubeMaterial(axis2));
-  return mesh;
-}
+  let pattern = [];
+  let running = false;
+  let angle = 0;
+  let targetAngle = null;
 
-// Tube 1 along Z axis
-const axis1 = new THREE.Vector3(0, 0, 1);
-const tube1 = createTube(axis1);
-tube1.rotation.x = Math.PI / 2;
-scene.add(tube1);
+  const gui = new dat.GUI();
+  gui.add(config, 'numWhite', 1, 70, 1).name('White Sections').onChange(buildPattern);
+  gui.add(config, 'numBlack', 0, 70, 1).name('Black Sections').onChange(buildPattern);
+  gui.add(config, 'whiteWidth', 0.1, 5, 0.1).name('White Width').onChange(buildPattern);
+  gui.add(config, 'blackWidth', 0.1, 5, 0.1).name('Black Width').onChange(buildPattern);
+  gui.add(config, 'diameter', 100, 600, 10).name('Diameter').onChange(resize);
+  gui.add(config, 'stepsPerRev', 10, 1000, 1).name('Steps/Rev');
 
-// Tube 2 rotated 60 degrees around Y axis
-const angle = THREE.MathUtils.degToRad(60);
-const axis2 = new THREE.Vector3(Math.sin(angle), 0, Math.cos(angle)).normalize();
-const tube2 = createTube(axis2);
-tube2.rotation.x = Math.PI / 2;
-tube2.rotation.y = angle;
-scene.add(tube2);
+  function resize() {
+    canvas.width = canvas.height = config.diameter;
+  }
+  resize();
 
-window.addEventListener('resize', onWindowResize);
-function onWindowResize() {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-}
+  function buildPattern() {
+    const total = config.numWhite * config.whiteWidth + config.numBlack * config.blackWidth;
+    const base = 2 * Math.PI / total;
+    pattern = [];
+    let start = 0;
+    for (let i = 0; i < config.numWhite + config.numBlack; i++) {
+      const isWhite = i % 2 === 0;
+      const width = base * (isWhite ? config.whiteWidth : config.blackWidth);
+      pattern.push({ isWhite, start, end: start + width });
+      start += width;
+    }
+  }
+  buildPattern();
 
-function animate() {
-  requestAnimationFrame(animate);
-  controls.update();
-  renderer.render(scene, camera);
-}
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate(angle);
+    pattern.forEach(seg => {
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.arc(0, 0, canvas.width / 2, seg.start, seg.end);
+      ctx.closePath();
+      ctx.fillStyle = seg.isWhite ? '#ffffff' : '#000000';
+      ctx.fill();
+    });
+    ctx.restore();
+  }
 
-animate();
+  function normalize(a) {
+    a = a % (2 * Math.PI);
+    return a < 0 ? a + 2 * Math.PI : a;
+  }
+
+  function nearestWhite(a) {
+    a = normalize(a);
+    let best = null;
+    let diff = Infinity;
+    pattern.forEach(seg => {
+      if (seg.isWhite) {
+        const mid = seg.start + (seg.end - seg.start) / 2;
+        let d = normalize(mid - a);
+        if (d > Math.PI) d -= 2 * Math.PI;
+        if (Math.abs(d) < diff) {
+          diff = Math.abs(d);
+          best = normalize(a + d);
+        }
+      }
+    });
+    return best;
+  }
+
+  function step() {
+    const stepAngle = 2 * Math.PI / config.stepsPerRev;
+    if (running) {
+      angle = normalize(angle + stepAngle);
+    } else if (targetAngle !== null) {
+      const diff = normalize(targetAngle - angle);
+      let delta = diff > Math.PI ? diff - 2 * Math.PI : diff;
+      if (Math.abs(delta) <= stepAngle / 2) {
+        angle = targetAngle;
+        targetAngle = null;
+      } else {
+        angle = normalize(angle + Math.sign(delta) * stepAngle);
+      }
+    }
+    draw();
+    requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+
+  btn.addEventListener('click', () => {
+    if (!running && targetAngle === null) {
+      running = true;
+      btn.textContent = 'Stop';
+    } else if (running) {
+      running = false;
+      btn.textContent = 'Start';
+      targetAngle = nearestWhite(angle);
+    }
+  });
+})();
 </script>
 </body>
 </html>
